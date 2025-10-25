@@ -1,13 +1,15 @@
 #!/bin/bash
 #
 # run_all.sh
-# Orchestrates IR lifting benchmarks across all samples using Ghidra and angr.
+# Orchestrates IR lifting benchmarks across all samples using Ghidra, angr, BAP, and LLVM.
 # Wraps each analysis with GNU time to capture runtime and memory metrics.
 #
 # Prerequisites:
 #   - GNU time installed (sudo apt install time)
 #   - Ghidra installed and GHIDRA_INSTALL_DIR configured
 #   - Python virtual environment with angr activated
+#   - BAP installed via opam (optional, set ENABLE_BAP=true to enable)
+#   - LLVM toolchain installed (optional, set ENABLE_LLVM=true to enable)
 #
 # Usage:
 #   1. Activate your angr virtual environment:
@@ -16,6 +18,7 @@
 #      ./run_all.sh
 #   OR set environment variables inline:
 #      SAMPLES_DIR=/path/to/samples RESULTS_DIR=/path/to/results ./run_all.sh
+#      ENABLE_BAP=true ENABLE_LLVM=true ./run_all.sh  # Enable optional tools
 #
 
 # ============================================================================
@@ -39,6 +42,14 @@ CSV_SUMMARY="${CSV_SUMMARY:-summary.csv}"
 # Path to Ghidra installation (required by analyze_ghidra.sh)
 # This can also be set as an environment variable before running this script
 GHIDRA_INSTALL_DIR="/home/analyst/ghidra"
+
+# Enable BAP analysis (set to "true" to enable, "false" or empty to disable)
+# BAP must be installed via opam for this to work
+ENABLE_BAP="${ENABLE_BAP:-false}"
+
+# Enable LLVM analysis (set to "true" to enable, "false" or empty to disable)
+# LLVM toolchain must be installed for this to work
+ENABLE_LLVM="${ENABLE_LLVM:-false}"
 # ============================================================================
 # SCRIPT SETUP
 # ============================================================================
@@ -49,22 +60,25 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 # Paths to the analysis scripts
 GHIDRA_SCRIPT="$SCRIPT_DIR/analyze_ghidra.sh"
 ANGR_SCRIPT="$SCRIPT_DIR/analyze_angr.py"
+BAP_SCRIPT="$SCRIPT_DIR/analyze_bap.sh"
+LLVM_SCRIPT="$SCRIPT_DIR/analyze_llvm.sh"
 
 # Full path to output log and CSV summary
 LOG_FILE="$RESULTS_DIR/$OUTPUT_LOG"
-CSV_FILE="$RESULTS_DIR/$CSV_SUMMARY"
 
 # ============================================================================
 # VALIDATION
 # ============================================================================
 
-echo "=========================================="
+echo "========================================="
 echo "IR Lifting Benchmark - Batch Analysis"
-echo "=========================================="
+echo "========================================="
 echo "Samples directory: $SAMPLES_DIR"
 echo "Results directory: $RESULTS_DIR"
 echo "Output log: $LOG_FILE"
 echo "Ghidra install: $GHIDRA_INSTALL_DIR"
+echo "BAP enabled: $ENABLE_BAP"
+echo "LLVM enabled: $ENABLE_LLVM"
 echo "=========================================="
 
 # Check if samples directory exists
@@ -95,6 +109,16 @@ if [ ! -f "$ANGR_SCRIPT" ]; then
     exit 1
 fi
 
+if [ "$ENABLE_BAP" = "true" ] && [ ! -f "$BAP_SCRIPT" ]; then
+    echo "ERROR: BAP analysis script not found: $BAP_SCRIPT" >&2
+    exit 1
+fi
+
+if [ "$ENABLE_LLVM" = "true" ] && [ ! -f "$LLVM_SCRIPT" ]; then
+    echo "ERROR: LLVM analysis script not found: $LLVM_SCRIPT" >&2
+    exit 1
+fi
+
 # Check if scripts are executable
 if [ ! -x "$GHIDRA_SCRIPT" ]; then
     echo "WARNING: Making Ghidra script executable: $GHIDRA_SCRIPT"
@@ -104,6 +128,16 @@ fi
 if [ ! -x "$ANGR_SCRIPT" ]; then
     echo "WARNING: Making angr script executable: $ANGR_SCRIPT"
     chmod +x "$ANGR_SCRIPT"
+fi
+
+if [ "$ENABLE_BAP" = "true" ] && [ ! -x "$BAP_SCRIPT" ]; then
+    echo "WARNING: Making BAP script executable: $BAP_SCRIPT"
+    chmod +x "$BAP_SCRIPT"
+fi
+
+if [ "$ENABLE_LLVM" = "true" ] && [ ! -x "$LLVM_SCRIPT" ]; then
+    echo "WARNING: Making LLVM script executable: $LLVM_SCRIPT"
+    chmod +x "$LLVM_SCRIPT"
 fi
 
 # Check if GNU time is available
@@ -126,6 +160,35 @@ if ! python3 -c "import angr" 2>/dev/null; then
     echo "  source /path/to/venv/bin/activate" >&2
     echo "Then run this script again." >&2
     exit 1
+fi
+
+# Check if BAP is available (if enabled)
+if [ "$ENABLE_BAP" = "true" ]; then
+    if ! command -v bap &> /dev/null; then
+        echo "WARNING: BAP is enabled but 'bap' command not found" >&2
+        echo "Please install BAP via opam:" >&2
+        echo "  1. sudo apt install opam" >&2
+        echo "  2. opam init" >&2
+        echo "  3. opam install bap" >&2
+        echo "Or disable BAP by setting ENABLE_BAP=false" >&2
+        exit 1
+    fi
+fi
+
+# Check if LLVM is available (if enabled)
+if [ "$ENABLE_LLVM" = "true" ]; then
+    LLVM_FOUND=false
+    if command -v llvm-objdump &> /dev/null || command -v llvm-dis &> /dev/null; then
+        LLVM_FOUND=true
+    fi
+    
+    if [ "$LLVM_FOUND" = false ]; then
+        echo "WARNING: LLVM is enabled but no LLVM tools found" >&2
+        echo "Please install LLVM toolchain:" >&2
+        echo "  sudo apt install llvm" >&2
+        echo "Or disable LLVM by setting ENABLE_LLVM=false" >&2
+        exit 1
+    fi
 fi
 
 # Export GHIDRA_INSTALL_DIR for child scripts
@@ -282,6 +345,80 @@ for SAMPLE in "$SAMPLES_DIR"/*; do
     
     # Clean up temp file
     rm -f "$ANGR_TIME_FILE"
+    
+    # ------------------------------------------------------------------------
+    # BAP Analysis (if enabled)
+    # ------------------------------------------------------------------------
+    
+    if [ "$ENABLE_BAP" = "true" ]; then
+        echo "" | tee -a "$LOG_FILE"
+        echo "--- BAP BIL IR Analysis ---" | tee -a "$LOG_FILE"
+        echo "" | tee -a "$LOG_FILE"
+        
+        # Create temporary file for time output
+        BAP_TIME_FILE="$RESULTS_DIR/.time_bap_${SAMPLE_NAME}_$$.tmp"
+        
+        # Run BAP analysis with time measurement
+        # Redirect stdout to log, stderr (time output) to temp file
+        if /usr/bin/time -v "$BAP_SCRIPT" "$SAMPLE" 2> "$BAP_TIME_FILE" >> "$LOG_FILE"; then
+            echo "BAP analysis: SUCCESS" | tee -a "$LOG_FILE"
+            BAP_STATUS="success"
+            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+        else
+            echo "BAP analysis: FAILED" | tee -a "$LOG_FILE"
+            BAP_STATUS="failed"
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+        fi
+        
+        # Append time output to log file
+        cat "$BAP_TIME_FILE" >> "$LOG_FILE"
+        
+        # Parse metrics from time output
+        BAP_METRICS=$(parse_time_output "$BAP_TIME_FILE")
+        
+        # Write to CSV
+        echo "$SAMPLE_NAME,bap,$BAP_METRICS,$BAP_STATUS" >> "$CSV_FILE"
+        
+        # Clean up temp file
+        rm -f "$BAP_TIME_FILE"
+    fi
+    
+    # ------------------------------------------------------------------------
+    # LLVM Analysis (if enabled)
+    # ------------------------------------------------------------------------
+    
+    if [ "$ENABLE_LLVM" = "true" ]; then
+        echo "" | tee -a "$LOG_FILE"
+        echo "--- LLVM IR Analysis ---" | tee -a "$LOG_FILE"
+        echo "" | tee -a "$LOG_FILE"
+        
+        # Create temporary file for time output
+        LLVM_TIME_FILE="$RESULTS_DIR/.time_llvm_${SAMPLE_NAME}_$$.tmp"
+        
+        # Run LLVM analysis with time measurement
+        # Redirect stdout to log, stderr (time output) to temp file
+        if /usr/bin/time -v "$LLVM_SCRIPT" "$SAMPLE" 2> "$LLVM_TIME_FILE" >> "$LOG_FILE"; then
+            echo "LLVM analysis: SUCCESS" | tee -a "$LOG_FILE"
+            LLVM_STATUS="success"
+            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+        else
+            echo "LLVM analysis: FAILED" | tee -a "$LOG_FILE"
+            LLVM_STATUS="failed"
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+        fi
+        
+        # Append time output to log file
+        cat "$LLVM_TIME_FILE" >> "$LOG_FILE"
+        
+        # Parse metrics from time output
+        LLVM_METRICS=$(parse_time_output "$LLVM_TIME_FILE")
+        
+        # Write to CSV
+        echo "$SAMPLE_NAME,llvm,$LLVM_METRICS,$LLVM_STATUS" >> "$CSV_FILE"
+        
+        # Clean up temp file
+        rm -f "$LLVM_TIME_FILE"
+    fi
     
     echo "" | tee -a "$LOG_FILE"
     echo "Completed: $SAMPLE_NAME" | tee -a "$LOG_FILE"
