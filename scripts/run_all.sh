@@ -41,7 +41,7 @@ CSV_SUMMARY="${CSV_SUMMARY:-summary.csv}"
 
 # Path to Ghidra installation (required by analyze_ghidra.sh)
 # This can also be set as an environment variable before running this script
-GHIDRA_INSTALL_DIR="/home/analyst/ghidra"
+GHIDRA_INSTALL_DIR="${GHIDRA_INSTALL_DIR:-/home/analyst/ghidra}"
 
 # Enable BAP analysis (set to "true" to enable, "false" or empty to disable)
 # BAP must be installed via opam for this to work
@@ -65,6 +65,7 @@ LLVM_SCRIPT="$SCRIPT_DIR/analyze_llvm.sh"
 
 # Full path to output log and CSV summary
 LOG_FILE="$RESULTS_DIR/$OUTPUT_LOG"
+CSV_FILE="$RESULTS_DIR/$CSV_SUMMARY"
 
 # ============================================================================
 # VALIDATION
@@ -79,6 +80,7 @@ echo "Output log: $LOG_FILE"
 echo "Ghidra install: $GHIDRA_INSTALL_DIR"
 echo "BAP enabled: $ENABLE_BAP"
 echo "LLVM enabled: $ENABLE_LLVM"
+echo "Timeout: ${TIMEOUT_SECONDS}s"
 echo "=========================================="
 
 # Check if samples directory exists
@@ -205,7 +207,8 @@ echo "========================================" >> "$LOG_FILE"
 echo "" >> "$LOG_FILE"
 
 # Initialize CSV summary file with headers
-echo "sample,tool,elapsed_seconds,max_rss_kb,user_time_seconds,system_time_seconds,status" > "$CSV_FILE"
+# New Schema: Sample_ID,Architecture,Tool,Success_Status,Time_s,Mem_MB,Func_Count,Block_Count,IR_Stmt_Count
+echo "Sample_ID,Architecture,Tool,Success_Status,Time_s,Mem_MB,Func_Count,Block_Count,IR_Stmt_Count" > "$CSV_FILE"
 
 # ============================================================================
 # MAIN ANALYSIS LOOP
@@ -222,59 +225,102 @@ SUCCESS_COUNT=0
 FAILURE_COUNT=0
 
 # ============================================================================
-# HELPER FUNCTION: Parse time output
+# HELPER FUNCTIONS
 # ============================================================================
 
 parse_time_output() {
     local time_file="$1"
-    local elapsed="N/A"
-    local max_rss="N/A"
-    local user_time="N/A"
-    local sys_time="N/A"
+    local elapsed="0"
+    local max_rss="0"
     
     if [ -f "$time_file" ]; then
         # Extract elapsed time (format: h:mm:ss or m:ss.ms)
-        elapsed=$(grep "Elapsed (wall clock) time" "$time_file" | awk '{print $NF}' | sed 's/[()]//g')
+        local raw_elapsed=$(grep "Elapsed (wall clock) time" "$time_file" | awk '{print $NF}' | sed 's/[()]//g')
+        # echo "DEBUG: raw_elapsed='$raw_elapsed'" >> "$LOG_FILE"
         
         # Convert elapsed time to seconds
-        if [[ "$elapsed" =~ ^([0-9]+):([0-9]+):([0-9.]+)$ ]]; then
+        if [[ "$raw_elapsed" =~ ^([0-9]+):([0-9]+):([0-9.]+)$ ]]; then
             # Format: h:mm:ss.ms
             local hours="${BASH_REMATCH[1]}"
             local minutes="${BASH_REMATCH[2]}"
             local seconds="${BASH_REMATCH[3]}"
             elapsed=$(echo "$hours * 3600 + $minutes * 60 + $seconds" | bc)
-        elif [[ "$elapsed" =~ ^([0-9]+):([0-9.]+)$ ]]; then
+        elif [[ "$raw_elapsed" =~ ^([0-9]+):([0-9.]+)$ ]]; then
             # Format: m:ss.ms
             local minutes="${BASH_REMATCH[1]}"
             local seconds="${BASH_REMATCH[2]}"
             elapsed=$(echo "$minutes * 60 + $seconds" | bc)
         fi
         
-        # Extract maximum resident set size (in KB)
-        max_rss=$(grep "Maximum resident set size" "$time_file" | awk '{print $(NF-1)}')
-        
-        # Extract user time (in seconds)
-        user_time=$(grep "User time (seconds):" "$time_file" | awk '{print $NF}')
-        
-        # Extract system time (in seconds)
-        sys_time=$(grep "System time (seconds):" "$time_file" | awk '{print $NF}')
+        # Extract maximum resident set size (in KB) -> Convert to MB
+        local raw_rss=$(grep "Maximum resident set size" "$time_file" | awk '{print $NF}')
+        if [ ! -z "$raw_rss" ]; then
+            max_rss=$(echo "scale=2; $raw_rss / 1024" | bc)
+        fi
     fi
     
-    echo "$elapsed,$max_rss,$user_time,$sys_time"
+    echo "$elapsed,$max_rss"
+}
+
+parse_stats() {
+    local log_file="$1"
+    local prefix="$2"
+    
+    local funcs="0"
+    local blocks="0"
+    local stmts="0"
+    
+    if [ -f "$log_file" ]; then
+        funcs=$(grep "${prefix}:Functions=" "$log_file" | cut -d'=' -f2 | head -n1)
+        blocks=$(grep "${prefix}:BasicBlocks=" "$log_file" | cut -d'=' -f2 | head -n1)
+        # Handle different naming for IR statements
+        if [ "$prefix" = "GHIDRA_STATS" ]; then
+            stmts=$(grep "${prefix}:TotalPcodeOps=" "$log_file" | cut -d'=' -f2 | head -n1)
+        elif [ "$prefix" = "ANGR_STATS" ]; then
+            stmts=$(grep "${prefix}:TotalVexStatements=" "$log_file" | cut -d'=' -f2 | head -n1)
+        elif [ "$prefix" = "BAP_STATS" ]; then
+            stmts=$(grep "${prefix}:TotalBilStatements=" "$log_file" | cut -d'=' -f2 | head -n1)
+        elif [ "$prefix" = "LLVM_STATS" ]; then
+            stmts=$(grep "${prefix}:TotalLlvmInstructions=" "$log_file" | cut -d'=' -f2 | head -n1)
+        fi
+        
+        # Fallback to Nodes if BasicBlocks not found (for angr compatibility if needed)
+        if [ -z "$blocks" ] && [ "$prefix" = "ANGR_STATS" ]; then
+             blocks=$(grep "${prefix}:Nodes=" "$log_file" | cut -d'=' -f2 | head -n1)
+        fi
+    fi
+    
+    # Default to 0 if empty
+    funcs="${funcs:-0}"
+    blocks="${blocks:-0}"
+    stmts="${stmts:-0}"
+    
+    echo "$funcs,$blocks,$stmts"
+}
+
+get_architecture() {
+    # Placeholder: In a real scenario, use 'file' command or read from metadata.
+    # For now, we'll try to guess from path or file command, or default to "Unknown"
+    local sample_path="$1"
+    # Try to extract from parent directory name if it matches known archs
+    local parent_dir=$(basename "$(dirname "$sample_path")")
+    if [[ "$parent_dir" =~ ^(x86|ARM|MIPS|PowerPC|Coldfire|SuperH4) ]]; then
+        echo "$parent_dir"
+    else
+        # Fallback to file command
+        file -b "$sample_path" | cut -d',' -f2 | xargs
+    fi
 }
 
 # Loop through all files in the samples directory
-for SAMPLE in "$SAMPLES_DIR"/*; do
-    # Skip if not a regular file
-    if [ ! -f "$SAMPLE" ]; then
-        continue
-    fi
-    
+# Support recursive search if samples are organized by architecture
+find "$SAMPLES_DIR" -type f | while read -r SAMPLE; do
     SAMPLE_COUNT=$((SAMPLE_COUNT + 1))
     SAMPLE_NAME=$(basename "$SAMPLE")
+    ARCH=$(get_architecture "$SAMPLE")
     
     echo "========================================" | tee -a "$LOG_FILE"
-    echo "Processing sample $SAMPLE_COUNT: $SAMPLE_NAME" | tee -a "$LOG_FILE"
+    echo "Processing sample: $SAMPLE_NAME ($ARCH)" | tee -a "$LOG_FILE"
     echo "========================================" | tee -a "$LOG_FILE"
     
     # ------------------------------------------------------------------------
@@ -285,41 +331,42 @@ for SAMPLE in "$SAMPLES_DIR"/*; do
     echo "--- Ghidra P-code Analysis ---" | tee -a "$LOG_FILE"
     echo "" | tee -a "$LOG_FILE"
     
-    # Create temporary files for time output and stdout
     GHIDRA_TIME_FILE="$RESULTS_DIR/.time_ghidra_${SAMPLE_NAME}_$$.tmp"
     GHIDRA_STDOUT_FILE="$RESULTS_DIR/.stdout_ghidra_${SAMPLE_NAME}_$$.tmp"
     
-    # Run Ghidra analysis with time measurement
-    # Redirect stdout to temp file, stderr (time output) to time file
-    if /usr/bin/time -v "$GHIDRA_SCRIPT" "$SAMPLE" > "$GHIDRA_STDOUT_FILE" 2> "$GHIDRA_TIME_FILE"; then
-        echo "Ghidra analysis: SUCCESS" | tee -a "$LOG_FILE"
-        GHIDRA_STATUS="success"
-    else
-        echo "Ghidra analysis: FAILED" | tee -a "$LOG_FILE"
-        GHIDRA_STATUS="failed"
+    # Run with timeout
+    /usr/bin/time -v timeout "${TIMEOUT_SECONDS}s" "$GHIDRA_SCRIPT" "$SAMPLE" > "$GHIDRA_STDOUT_FILE" 2> "$GHIDRA_TIME_FILE"
+    EXIT_CODE=$?
+    
+    GHIDRA_STATUS="Success"
+    if [ $EXIT_CODE -eq 124 ]; then
+        echo "Ghidra analysis: TIMEOUT (${TIMEOUT_SECONDS}s)" | tee -a "$LOG_FILE"
+        GHIDRA_STATUS="Failure - Timeout"
         FAILURE_COUNT=$((FAILURE_COUNT + 1))
+    elif [ $EXIT_CODE -ne 0 ]; then
+        echo "Ghidra analysis: FAILED (Exit Code: $EXIT_CODE)" | tee -a "$LOG_FILE"
+        echo "--- Ghidra Stderr ---" >> "$LOG_FILE"
+        cat "$GHIDRA_TIME_FILE" >> "$LOG_FILE"
+        echo "---------------------" >> "$LOG_FILE"
+        GHIDRA_STATUS="Failure - Crash"
+        FAILURE_COUNT=$((FAILURE_COUNT + 1))
+    else
+        echo "Ghidra analysis: SUCCESS" | tee -a "$LOG_FILE"
     fi
     
-    # Append stdout to log file
     cat "$GHIDRA_STDOUT_FILE" >> "$LOG_FILE"
     
-    # Extract and log CFG statistics
-    echo "" >> "$LOG_FILE"
-    echo "Ghidra CFG Stats:" >> "$LOG_FILE"
-    grep "GHIDRA_STATS:" "$GHIDRA_STDOUT_FILE" >> "$LOG_FILE" 2>/dev/null || echo "  (CFG stats not available)" >> "$LOG_FILE"
+    # Parse metrics
+    GHIDRA_PERF=$(parse_time_output "$GHIDRA_TIME_FILE")
+    GHIDRA_STATS=$(parse_stats "$GHIDRA_STDOUT_FILE" "GHIDRA_STATS")
     
-    # Extract and log performance metrics
-    echo "" >> "$LOG_FILE"
-    echo "Ghidra Performance:" >> "$LOG_FILE"
-    grep -E 'Elapsed \(wall clock\) time|Maximum resident set size' "$GHIDRA_TIME_FILE" >> "$LOG_FILE"
+    # If failed, zero out stats
+    if [[ "$GHIDRA_STATUS" != "Success" ]]; then
+        GHIDRA_STATS="0,0,0"
+    fi
     
-    # Parse metrics from time output
-    GHIDRA_METRICS=$(parse_time_output "$GHIDRA_TIME_FILE")
+    echo "$SAMPLE_NAME,$ARCH,ghidra,$GHIDRA_STATUS,$GHIDRA_PERF,$GHIDRA_STATS" >> "$CSV_FILE"
     
-    # Write to CSV
-    echo "$SAMPLE_NAME,ghidra,$GHIDRA_METRICS,$GHIDRA_STATUS" >> "$CSV_FILE"
-    
-    # Clean up temp files
     rm -f "$GHIDRA_TIME_FILE" "$GHIDRA_STDOUT_FILE"
     
     # ------------------------------------------------------------------------
@@ -330,42 +377,37 @@ for SAMPLE in "$SAMPLES_DIR"/*; do
     echo "--- angr VEX IR Analysis ---" | tee -a "$LOG_FILE"
     echo "" | tee -a "$LOG_FILE"
     
-    # Create temporary files for time output and stdout
     ANGR_TIME_FILE="$RESULTS_DIR/.time_angr_${SAMPLE_NAME}_$$.tmp"
     ANGR_STDOUT_FILE="$RESULTS_DIR/.stdout_angr_${SAMPLE_NAME}_$$.tmp"
     
-    # Run angr analysis with time measurement
-    # Redirect stdout to temp file, stderr (time output) to time file
-    if /usr/bin/time -v python3 "$ANGR_SCRIPT" "$SAMPLE" > "$ANGR_STDOUT_FILE" 2> "$ANGR_TIME_FILE"; then
-        echo "angr analysis: SUCCESS" | tee -a "$LOG_FILE"
-        ANGR_STATUS="success"
-        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-    else
-        echo "angr analysis: FAILED" | tee -a "$LOG_FILE"
-        ANGR_STATUS="failed"
+    /usr/bin/time -v timeout "${TIMEOUT_SECONDS}s" python3 "$ANGR_SCRIPT" "$SAMPLE" > "$ANGR_STDOUT_FILE" 2> "$ANGR_TIME_FILE"
+    EXIT_CODE=$?
+    
+    ANGR_STATUS="Success"
+    if [ $EXIT_CODE -eq 124 ]; then
+        echo "angr analysis: TIMEOUT (${TIMEOUT_SECONDS}s)" | tee -a "$LOG_FILE"
+        ANGR_STATUS="Failure - Timeout"
         FAILURE_COUNT=$((FAILURE_COUNT + 1))
+    elif [ $EXIT_CODE -ne 0 ]; then
+        echo "angr analysis: FAILED (Exit Code: $EXIT_CODE)" | tee -a "$LOG_FILE"
+        ANGR_STATUS="Failure - Crash"
+        FAILURE_COUNT=$((FAILURE_COUNT + 1))
+    else
+        echo "angr analysis: SUCCESS" | tee -a "$LOG_FILE"
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
     fi
     
-    # Append stdout to log file
     cat "$ANGR_STDOUT_FILE" >> "$LOG_FILE"
     
-    # Extract and log CFG statistics
-    echo "" >> "$LOG_FILE"
-    echo "angr CFG Stats:" >> "$LOG_FILE"
-    grep "ANGR_STATS:" "$ANGR_STDOUT_FILE" >> "$LOG_FILE" 2>/dev/null || echo "  (CFG stats not available)" >> "$LOG_FILE"
+    ANGR_PERF=$(parse_time_output "$ANGR_TIME_FILE")
+    ANGR_STATS=$(parse_stats "$ANGR_STDOUT_FILE" "ANGR_STATS")
     
-    # Extract and log performance metrics
-    echo "" >> "$LOG_FILE"
-    echo "angr Performance:" >> "$LOG_FILE"
-    grep -E 'Elapsed \(wall clock\) time|Maximum resident set size' "$ANGR_TIME_FILE" >> "$LOG_FILE"
+    if [[ "$ANGR_STATUS" != "Success" ]]; then
+        ANGR_STATS="0,0,0"
+    fi
     
-    # Parse metrics from time output
-    ANGR_METRICS=$(parse_time_output "$ANGR_TIME_FILE")
+    echo "$SAMPLE_NAME,$ARCH,angr,$ANGR_STATUS,$ANGR_PERF,$ANGR_STATS" >> "$CSV_FILE"
     
-    # Write to CSV
-    echo "$SAMPLE_NAME,angr,$ANGR_METRICS,$ANGR_STATUS" >> "$CSV_FILE"
-    
-    # Clean up temp files
     rm -f "$ANGR_TIME_FILE" "$ANGR_STDOUT_FILE"
     
     # ------------------------------------------------------------------------
@@ -377,32 +419,39 @@ for SAMPLE in "$SAMPLES_DIR"/*; do
         echo "--- BAP BIL IR Analysis ---" | tee -a "$LOG_FILE"
         echo "" | tee -a "$LOG_FILE"
         
-        # Create temporary file for time output
         BAP_TIME_FILE="$RESULTS_DIR/.time_bap_${SAMPLE_NAME}_$$.tmp"
+        BAP_STDOUT_FILE="$RESULTS_DIR/.stdout_bap_${SAMPLE_NAME}_$$.tmp"
         
-        # Run BAP analysis with time measurement
-        # Redirect stdout to log, stderr (time output) to temp file
-        if /usr/bin/time -v "$BAP_SCRIPT" "$SAMPLE" 2> "$BAP_TIME_FILE" >> "$LOG_FILE"; then
-            echo "BAP analysis: SUCCESS" | tee -a "$LOG_FILE"
-            BAP_STATUS="success"
-            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-        else
-            echo "BAP analysis: FAILED" | tee -a "$LOG_FILE"
-            BAP_STATUS="failed"
+        /usr/bin/time -v timeout "${TIMEOUT_SECONDS}s" "$BAP_SCRIPT" "$SAMPLE" > "$BAP_STDOUT_FILE" 2> "$BAP_TIME_FILE"
+        EXIT_CODE=$?
+        
+        BAP_STATUS="Success"
+        if [ $EXIT_CODE -eq 124 ]; then
+            echo "BAP analysis: TIMEOUT (${TIMEOUT_SECONDS}s)" | tee -a "$LOG_FILE"
+            BAP_STATUS="Failure - Timeout"
             FAILURE_COUNT=$((FAILURE_COUNT + 1))
+        elif [ $EXIT_CODE -ne 0 ]; then
+            echo "BAP analysis: FAILED (Exit Code: $EXIT_CODE)" | tee -a "$LOG_FILE"
+            BAP_STATUS="Failure - Crash"
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+        else
+            echo "BAP analysis: SUCCESS" | tee -a "$LOG_FILE"
+            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         fi
         
-        # Append time output to log file
-        cat "$BAP_TIME_FILE" >> "$LOG_FILE"
+        # Append output to log (optional, maybe too verbose)
+        # cat "$BAP_STDOUT_FILE" >> "$LOG_FILE"
         
-        # Parse metrics from time output
-        BAP_METRICS=$(parse_time_output "$BAP_TIME_FILE")
+        BAP_PERF=$(parse_time_output "$BAP_TIME_FILE")
+        BAP_STATS=$(parse_stats "$BAP_STDOUT_FILE" "BAP_STATS")
         
-        # Write to CSV
-        echo "$SAMPLE_NAME,bap,$BAP_METRICS,$BAP_STATUS" >> "$CSV_FILE"
+        if [[ "$BAP_STATUS" != "Success" ]]; then
+            BAP_STATS="0,0,0"
+        fi
         
-        # Clean up temp file
-        rm -f "$BAP_TIME_FILE"
+        echo "$SAMPLE_NAME,$ARCH,bap,$BAP_STATUS,$BAP_PERF,$BAP_STATS" >> "$CSV_FILE"
+        
+        rm -f "$BAP_TIME_FILE" "$BAP_STDOUT_FILE"
     fi
     
     # ------------------------------------------------------------------------
@@ -414,32 +463,39 @@ for SAMPLE in "$SAMPLES_DIR"/*; do
         echo "--- LLVM IR Analysis ---" | tee -a "$LOG_FILE"
         echo "" | tee -a "$LOG_FILE"
         
-        # Create temporary file for time output
         LLVM_TIME_FILE="$RESULTS_DIR/.time_llvm_${SAMPLE_NAME}_$$.tmp"
+        LLVM_STDOUT_FILE="$RESULTS_DIR/.stdout_llvm_${SAMPLE_NAME}_$$.tmp"
         
-        # Run LLVM analysis with time measurement
-        # Redirect stdout to log, stderr (time output) to temp file
-        if /usr/bin/time -v "$LLVM_SCRIPT" "$SAMPLE" 2> "$LLVM_TIME_FILE" >> "$LOG_FILE"; then
-            echo "LLVM analysis: SUCCESS" | tee -a "$LOG_FILE"
-            LLVM_STATUS="success"
-            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-        else
-            echo "LLVM analysis: FAILED" | tee -a "$LOG_FILE"
-            LLVM_STATUS="failed"
+        /usr/bin/time -v timeout "${TIMEOUT_SECONDS}s" "$LLVM_SCRIPT" "$SAMPLE" > "$LLVM_STDOUT_FILE" 2> "$LLVM_TIME_FILE"
+        EXIT_CODE=$?
+        
+        LLVM_STATUS="Success"
+        if [ $EXIT_CODE -eq 124 ]; then
+            echo "LLVM analysis: TIMEOUT (${TIMEOUT_SECONDS}s)" | tee -a "$LOG_FILE"
+            LLVM_STATUS="Failure - Timeout"
             FAILURE_COUNT=$((FAILURE_COUNT + 1))
+        elif [ $EXIT_CODE -ne 0 ]; then
+            echo "LLVM analysis: FAILED (Exit Code: $EXIT_CODE)" | tee -a "$LOG_FILE"
+            LLVM_STATUS="Failure - Crash"
+            FAILURE_COUNT=$((FAILURE_COUNT + 1))
+        else
+            echo "LLVM analysis: SUCCESS" | tee -a "$LOG_FILE"
+            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         fi
         
-        # Append time output to log file
-        cat "$LLVM_TIME_FILE" >> "$LOG_FILE"
+        # Append output to log
+        # cat "$LLVM_STDOUT_FILE" >> "$LOG_FILE"
         
-        # Parse metrics from time output
-        LLVM_METRICS=$(parse_time_output "$LLVM_TIME_FILE")
+        LLVM_PERF=$(parse_time_output "$LLVM_TIME_FILE")
+        LLVM_STATS=$(parse_stats "$LLVM_STDOUT_FILE" "LLVM_STATS")
         
-        # Write to CSV
-        echo "$SAMPLE_NAME,llvm,$LLVM_METRICS,$LLVM_STATUS" >> "$CSV_FILE"
+        if [[ "$LLVM_STATUS" != "Success" ]]; then
+            LLVM_STATS="0,0,0"
+        fi
         
-        # Clean up temp file
-        rm -f "$LLVM_TIME_FILE"
+        echo "$SAMPLE_NAME,$ARCH,llvm,$LLVM_STATUS,$LLVM_PERF,$LLVM_STATS" >> "$CSV_FILE"
+        
+        rm -f "$LLVM_TIME_FILE" "$LLVM_STDOUT_FILE"
     fi
     
     echo "" | tee -a "$LOG_FILE"
@@ -455,16 +511,8 @@ echo "========================================" | tee -a "$LOG_FILE"
 echo "Benchmark Complete" | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 echo "Finished: $(date)" | tee -a "$LOG_FILE"
-echo "Samples processed: $SAMPLE_COUNT" | tee -a "$LOG_FILE"
-echo "Successful analyses: $SUCCESS_COUNT" | tee -a "$LOG_FILE"
-echo "Failed analyses: $FAILURE_COUNT" | tee -a "$LOG_FILE"
 echo "Results saved to: $LOG_FILE" | tee -a "$LOG_FILE"
 echo "CSV summary saved to: $CSV_FILE" | tee -a "$LOG_FILE"
 echo "=========================================" | tee -a "$LOG_FILE"
 
-# Exit with appropriate status
-if [ $FAILURE_COUNT -gt 0 ]; then
-    exit 1
-else
-    exit 0
-fi
+exit 0

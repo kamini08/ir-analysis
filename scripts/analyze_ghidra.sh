@@ -12,7 +12,8 @@
 
 # Path to your Ghidra installation directory (contains support/, Ghidra/, etc.)
 # Example: /opt/ghidra_10.4_PUBLIC or /home/user/tools/ghidra_11.0
-GHIDRA_INSTALL_DIR="/home/analyst/ghidra"
+GHIDRA_INSTALL_DIR="${GHIDRA_INSTALL_DIR:-/home/analyst/ghidra}"
+
 # Directory where temporary Ghidra projects will be created
 # These projects are used for headless analysis and can be cleaned up afterward
 GHIDRA_PROJECT_DIR="./ghidra_projects"
@@ -20,10 +21,6 @@ GHIDRA_PROJECT_DIR="./ghidra_projects"
 # Path to the CFG statistics post-script
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 POST_SCRIPT_PATH="$SCRIPT_DIR/get_cfg_stats.py"
-
-# ============================================================================
-# INPUT VALIDATION
-# ============================================================================
 
 # Check if binary path argument was provided
 if [ $# -eq 0 ]; then

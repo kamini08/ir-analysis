@@ -84,10 +84,45 @@ echo ""
 echo "Lifting to BIL IR..."
 echo ""
 
-"$BAP_CMD" "$BINARY_PATH" -d bil
+# Run BAP to lift binary to BIL and capture output
+echo ""
+echo "Lifting to BIL IR..."
+echo ""
 
-# Capture exit status
+# Create temporary file for output
+BAP_OUT=$(mktemp)
+
+"$BAP_CMD" "$BINARY_PATH" -d bil > "$BAP_OUT"
 EXIT_STATUS=$?
+
+if [ $EXIT_STATUS -eq 0 ]; then
+    cat "$BAP_OUT"
+    
+    # Count metrics using simple heuristics on BIL output
+    # Blocks: roughly correspond to scopes enclosed in braces '{' in some output formats, 
+    # or we can count jumps as block terminators. 
+    # For standard BAP BIL output, it's often a list of statements.
+    # Let's count lines with ':=' (assignments), 'jmp', 'call', 'when' as statements.
+    # Let's count '{' as block starts if present, otherwise default to 1 or heuristic.
+    
+    # Note: This is an approximation.
+    NUM_STMTS=$(grep -E ":=|jmp|call|when" "$BAP_OUT" | wc -l)
+    NUM_BLOCKS=$(grep -c "{" "$BAP_OUT")
+    
+    # If no blocks detected (flat output), assume at least 1
+    if [ "$NUM_BLOCKS" -eq 0 ]; then
+        NUM_BLOCKS=1
+    fi
+    
+    echo ""
+    echo "--- BAP BIL Stats ---"
+    echo "BAP_STATS:Functions=0" # BAP BIL doesn't explicitly list functions in simple output
+    echo "BAP_STATS:BasicBlocks=$NUM_BLOCKS"
+    echo "BAP_STATS:TotalBilStatements=$NUM_STMTS"
+    echo "---------------------"
+fi
+
+rm -f "$BAP_OUT"
 
 # ============================================================================
 # ERROR HANDLING

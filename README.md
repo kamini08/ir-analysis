@@ -1,136 +1,86 @@
-# IR Lifting Benchmark PoC (Ghidra vs. angr vs. BAP)
+# IR Lifting Benchmark
 
-## 1. Project overview
+A comprehensive benchmarking suite to evaluate the performance and reliability of Intermediate Representation (IR) lifting tools for security research.
 
-Benchmarks IR lifting performance of Ghidra (P-code), angr (VEX), BAP (BIL), and optional LLVM IR pipelines on small benign binaries to compare runtime and memory consumption for security research workflows.
-This README aligns with the accompanying comparing analysis of IR design trade-offs (P-code, VEX, BIL, LLVM IR) and helps map empirical benchmarks to the paper's discussion of vulnerability discovery, malware triage, and deobfuscation tasks.
+## Supported Tools
 
-## 2. Safety warning (READ FIRST)
+| Tool       | IR Type | Analysis Type                                  |
+| ---------- | ------- | ---------------------------------------------- |
+| **Ghidra** | P-code  | Static Analysis (Headless)                     |
+| **angr**   | VEX     | Static Analysis (CFG Recovery)                 |
+| **BAP**    | BIL     | Static Analysis (Lifting)                      |
+| **LLVM**   | LLVM IR | Lifting (RetDec/mctoll) or Disassembly (Proxy) |
 
-- **No malware is shipped**. Only benign samples are present.
-- Handle any additional samples (especially malware) **inside an isolated VM / sandbox** with snapshots and no network bridge.
-- You are responsible for sourcing malware safely (see `samples/MALWARE_SAMPLES_GO_HERE.txt`).
+## Prerequisites
 
-## 3. Repository layout
+- **OS**: Ubuntu 20.04/22.04 LTS (Recommended)
+- **Ghidra**: Version 10.x or 11.x (Installed separately)
+- **Python**: 3.8+
 
-| Path | Purpose |
-| --- | --- |
-| `scripts/` | Automation scripts (`analyze_ghidra.sh`, `analyze_angr.py`, `analyze_bap.sh`, `analyze_llvm.sh`, `run_all.sh`) for all supported IR toolchains |
-| `samples/benign/` | Benign example binaries |
-| `samples/MALWARE_SAMPLES_GO_HERE.txt` | Placement instructions for user-provided malware |
-| `results/` | Generated logs and summaries |
-| `README.md` | Documentation (this file) |
+## Quick Start
 
-## 4. Prerequisites
+### 1. Setup Environment
 
-| Requirement | Notes |
-| --- | --- |
-| Ubuntu / Debian-like host | Tested mentally against Ubuntu 22.04 |
-| Java 21+ | `sudo apt install openjdk-21-jdk` |
-| Python 3.10+ | `sudo apt install python3 python3-venv python3-pip` |
-| Virtualenv | `python3 -m venv .venv && source .venv/bin/activate` |
-| angr | `pip install --upgrade pip angr` |
-| Ghidra ≥ 10.x | Download <https://ghidra-sre.org/> and unzip (e.g., `/opt/ghidra`) |
-| GNU time | `sudo apt install time` |
-| BAP (optional) | Install via opam: `sudo apt install opam && opam init && opam install bap` |
-| LLVM toolchain ≥ 15 (optional) | `sudo apt install llvm` or install from <https://releases.llvm.org/> |
-
-## 5. Quick start
-
-1. Clone the repo inside your analysis VM:  
-   `git clone https://github.com/<you>/ir-benchmark-poc.git`
-2. Enter the project and create a venv:  
-   `cd ir-benchmark-poc && python3 -m venv .venv && source .venv/bin/activate`
-3. Install Python deps:  
-   `pip install --upgrade pip angr`
-4. (Optional) Install BAP via opam if you plan to benchmark BIL IR:  
-
-   ```bash
-   sudo apt install opam
-   opam init
-   opam install bap
-   eval $(opam env)
-   ```
-
-5. (Optional) Install LLVM 15+ binaries if you plan to benchmark an LLVM IR pipeline:  
-   `sudo apt install llvm`
-6. Download Ghidra and note its install path (e.g., `/opt/ghidra`).
-7. Place benign samples in `samples/benign/`. Do **not** add malware to git.
-8. Configure script paths (see below) and run `./scripts/run_all.sh`.
-
-## 6. Script configuration
-
-Edit variables at the top of each script or export them before running.
-
-| Variable | Description | Example |
-| --- | --- | --- |
-| `GHIDRA_INSTALL_DIR` | Directory containing `ghidraRun` | `/opt/ghidra` |
-| `PROJECT_DIR` | Absolute repo root | `/home/user/ir-benchmark-poc` |
-| `SAMPLES_DIR` / `MALWARE_DIR` | Folder scanned for binaries | `"$PROJECT_DIR/samples/benign"` |
-| `RESULTS_DIR` | Output directory | `"$PROJECT_DIR/results"` |
-| `ENABLE_BAP` | Enable BAP/BIL analysis (true/false) | `true` |
-| `ENABLE_LLVM` | Enable LLVM IR analysis (true/false) | `true` |
-
-Inline overrides:  
+Run the automated setup script to install system dependencies, Python venv, and tools (angr, BAP):
 
 ```bash
-GHIDRA_INSTALL_DIR=/opt/ghidra PROJECT_DIR=$(pwd) ./scripts/run_all.sh
-ENABLE_BAP=true ENABLE_LLVM=true ./scripts/run_all.sh  # Enable optional tools
+./setup.sh
 ```
 
-## 7. Working with samples
+### 2. Configure Ghidra
 
-- Benign binaries already live in `samples/benign/`.
-- To test malware, follow the instructions inside `samples/MALWARE_SAMPLES_GO_HERE.txt`. Keep them **out of source control**.
-- When transferring samples, prefer ISO images or shared folders attached only to the VM.
-
-## 8. Running the benchmark
+Set the path to your Ghidra installation:
 
 ```bash
-chmod +x scripts/*.sh
+export GHIDRA_INSTALL_DIR=/path/to/ghidra_11.0.1_PUBLIC
+```
+
+### 3. Populate Dataset
+
+Place your malware samples in the `samples/malware/<arch>/` directories.
+(Benign samples are provided in `samples/benign/` for testing).
+
+### 4. Run Benchmark
+
+Activate the virtual environment and run the benchmark:
+
+```bash
 source .venv/bin/activate
-GHIDRA_INSTALL_DIR=/opt/ghidra PROJECT_DIR=$(pwd) ./scripts/run_all.sh
+./scripts/run_all.sh
 ```
 
-To enable optional tools (BAP and/or LLVM):
+To enable optional tools (BAP and LLVM):
 
 ```bash
-ENABLE_BAP=true ENABLE_LLVM=true GHIDRA_INSTALL_DIR=/opt/ghidra ./scripts/run_all.sh
+ENABLE_BAP=true ENABLE_LLVM=true ./scripts/run_all.sh
 ```
 
-The wrapper:
+### 5. Generate Report
 
-- Launches Ghidra and angr analysis (always enabled), plus optional BAP and LLVM analysis helpers.
-- Wraps each run with `time -v`.
-- Writes raw logs plus parsed metrics to `results/`.
+After the benchmark completes, generate a summary report:
 
-**Note on LLVM analysis:**
+```bash
+python3 scripts/report_generator.py
+```
 
-- For LLVM bitcode files, the script will disassemble to LLVM IR
-- For native binaries, it provides LLVM-based disassembly and analysis
-- For true binary-to-LLVM IR lifting, consider integrating [mcsema](https://github.com/lifting-bits/mcsema) or [remill](https://github.com/lifting-bits/remill)
+This creates `results/benchmark_report.md`.
 
-## 9. Understanding results
+## Directory Structure
 
-- `results/analysis_results.log` — mixed raw + human-readable summary produced per run. Expect one block per configured tool (Ghidra / angr / BAP / LLVM IR).  
-  Look for:
-  - `Elapsed (wall clock) time` → total runtime.
-  - `Maximum resident set size` → peak memory (KB).
-- `results/summary.csv` (optional) — `sample,tool,elapsed_seconds,max_rss_kb`.
-- Compare tools per sample by inspecting identical section headings.
+- `scripts/`: Analysis and orchestration scripts.
+- `samples/`: Dataset directory (benign and malware).
+- `results/`: Output logs and CSV summaries.
 
-The scripts **do not generate** CFG coverage, deobfuscation ratings, or similar qualitative scores. Those were manual metrics referenced in the companion paper.
+## Advanced Configuration
 
-## 10. Validation checklist
+### LLVM Lifting
 
-- [ ] Fresh VM with requirements installed.
-- [ ] `GHIDRA_INSTALL_DIR` and friends configured.
-- [ ] Benign executables available in `samples/benign/`.
-- [ ] `./scripts/run_all.sh` completes without errors.
-- [ ] Log files appear under `results/`.
-- [ ] Parsed metrics show entries for every enabled tool (Ghidra, angr, and optionally BAP/LLVM).
+To enable true binary-to-LLVM IR lifting, you need **RetDec** or **llvm-mctoll**.
+Run the helper script to attempt installation:
 
-## 11. Troubleshooting tips
+```bash
+./scripts/install_llvm_lifter.sh
+```
 
 - Missing Ghidra? Verify the install path and that `ghidraRun` is executable.
 - Python import errors? Reactivate itialized and BAP is installed: `opam install bap && eval $(opam env)`.venv and reinstall angr.
@@ -138,13 +88,11 @@ The scripts **do not generate** CFG coverage, deobfuscation ratings, or similar 
 - LLVM not found? Install LLVM toolchain: `sudo apt install llvm` or download from <https://releases.llvm.org/>.
 - Parsing failures? Confirm GNU time output is English and scripts still redirect stdout/stderr to the expected temp files.
 
-## 12. Limitations & next steps
+### Customization
 
-- Benchmarks only performance on small binaries; expand sample set for broader coverage.
-- Resource usage varies by hardware and Ghidra project cache state.
-- For richer metrics (CFG quality, detection scores), integrate additional tooling or manual review, leveraging insights from the comparative IR study to decide which IR best suits each task.
+- **Timeout**: Set `TIMEOUT_SECONDS` (default: 60s).
+- **Paths**: Override `SAMPLES_DIR`, `RESULTS_DIR` via environment variables.
 
-## 13. Contributing
+## License
 
-- Submit PRs that respect safe-handling practices and avoid including malware.
-- Document any new dependencies or configuration options.
+[MIT License](LICENSE)

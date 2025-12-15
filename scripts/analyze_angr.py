@@ -98,7 +98,7 @@ def analyze_binary(binary_path):
         # Print parseable CFG statistics for automated collection
         print("\n--- angr CFG & IR Stats ---")
         print(f"ANGR_STATS:Functions={num_functions}")
-        print(f"ANGR_STATS:Nodes={num_nodes}")
+        print(f"ANGR_STATS:BasicBlocks={num_nodes}")
         print(f"ANGR_STATS:Edges={num_edges}")
         print(f"ANGR_STATS:TotalVexStatements={total_vex_statements}")
         print("---------------------------")

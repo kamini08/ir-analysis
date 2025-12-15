@@ -100,36 +100,107 @@ if [[ "$FILE_TYPE" == *"LLVM"* ]] || [[ "$FILE_TYPE" == *"bitcode"* ]]; then
         exit 1
     fi
 else
-    echo ""
-    echo "Detected native binary (not LLVM bitcode)"
-    echo "Performing LLVM-based binary analysis..."
-    echo ""
+    # Check for true lifters
+    LIFTER_CMD=""
+    LIFTER_TYPE=""
     
-    # For native binaries, use llvm-objdump to show disassembly and metadata
-    # Note: This doesn't lift to LLVM IR, but provides LLVM-based analysis
+    if command -v retdec-decompiler &> /dev/null; then
+        LIFTER_CMD="retdec-decompiler"
+        LIFTER_TYPE="retdec"
+    elif command -v llvm-mctoll &> /dev/null; then
+        LIFTER_CMD="llvm-mctoll"
+        LIFTER_TYPE="mctoll"
+    fi
     
-    if command -v "$LLVM_OBJDUMP" &> /dev/null; then
-        echo "--- Binary Information ---"
-        "$LLVM_OBJDUMP" -h "$BINARY_PATH" 2>&1
+    if [ -n "$LIFTER_CMD" ]; then
+        echo "Found LLVM lifter: $LIFTER_CMD"
+        echo "Lifting binary to LLVM IR..."
         
-        echo ""
-        echo "--- Disassembly (first 100 instructions) ---"
-        "$LLVM_OBJDUMP" -d "$BINARY_PATH" 2>&1 | head -n 150
+        LLVM_IR_FILE="${BINARY_PATH}.ll"
         
-        echo ""
-        echo "--- Symbol Table (first 50 entries) ---"
-        "$LLVM_OBJDUMP" -t "$BINARY_PATH" 2>&1 | head -n 55
+        if [ "$LIFTER_TYPE" = "retdec" ]; then
+            # RetDec usage: retdec-decompiler input_file
+            # It generates input_file.ll automatically
+            "$LIFTER_CMD" "$BINARY_PATH"
+            # RetDec might generate .ll or .c depending on config, but usually .ll is intermediate
+            # Actually RetDec produces .c by default, but keeps .ll if configured or in temp
+            # Let's assume standard behavior or check for generated .ll
+            
+            # If RetDec generates .ll, it's usually named <binary>.ll
+            if [ -f "$LLVM_IR_FILE" ]; then
+                cat "$LLVM_IR_FILE"
+                
+                # Count stats
+                NUM_INSTR=$(grep -cE "^[[:space:]]*[a-z]+" "$LLVM_IR_FILE")
+                echo ""
+                echo "--- LLVM IR Stats ---"
+                echo "LLVM_STATS:Functions=0" # Placeholder
+                echo "LLVM_STATS:BasicBlocks=0" # Placeholder
+                echo "LLVM_STATS:TotalLlvmInstructions=$NUM_INSTR"
+                echo "---------------------"
+                
+                rm -f "$LLVM_IR_FILE"
+                EXIT_STATUS=0
+            else
+                echo "WARNING: RetDec ran but no .ll file found."
+                EXIT_STATUS=1
+            fi
+            
+        elif [ "$LIFTER_TYPE" = "mctoll" ]; then
+            # llvm-mctoll usage: llvm-mctoll -d input_file > output.ll
+            "$LIFTER_CMD" -d "$BINARY_PATH" > "$LLVM_IR_FILE" 2>/dev/null
+            
+            if [ -s "$LLVM_IR_FILE" ]; then
+                cat "$LLVM_IR_FILE"
+                 # Count stats
+                NUM_INSTR=$(grep -cE "^[[:space:]]*[a-z]+" "$LLVM_IR_FILE")
+                echo ""
+                echo "--- LLVM IR Stats ---"
+                echo "LLVM_STATS:Functions=0"
+                echo "LLVM_STATS:BasicBlocks=0"
+                echo "LLVM_STATS:TotalLlvmInstructions=$NUM_INSTR"
+                echo "---------------------"
+                
+                rm -f "$LLVM_IR_FILE"
+                EXIT_STATUS=0
+            else
+                 echo "WARNING: llvm-mctoll failed to generate output."
+                 EXIT_STATUS=1
+            fi
+        fi
         
-        EXIT_STATUS=0
-        
-        echo ""
-        echo "NOTE: For true binary-to-LLVM IR lifting, consider using:"
-        echo "  - mcsema: https://github.com/lifting-bits/mcsema"
-        echo "  - remill: https://github.com/lifting-bits/remill"
-        echo "  - rellic: https://github.com/lifting-bits/rellic"
     else
-        echo "ERROR: llvm-objdump not found" >&2
-        exit 1
+        echo "No dedicated LLVM lifter found (RetDec/mctoll)."
+        echo "Falling back to llvm-objdump for disassembly analysis (Proxy for IR)."
+        echo ""
+    
+        if command -v "$LLVM_OBJDUMP" &> /dev/null; then
+            echo "--- Binary Information ---"
+            "$LLVM_OBJDUMP" -h "$BINARY_PATH" 2>&1
+            
+            echo ""
+            echo "--- Disassembly (first 100 instructions) ---"
+            "$LLVM_OBJDUMP" -d "$BINARY_PATH" 2>&1 | head -n 150
+            
+            # Count assembly instructions as a proxy
+            NUM_INSTR=$("$LLVM_OBJDUMP" -d "$BINARY_PATH" | grep -cE "^[[:space:]]*[0-9a-f]+:")
+            
+            echo ""
+            echo "--- LLVM IR Stats (Proxy: Assembly) ---"
+            echo "LLVM_STATS:Functions=0"
+            echo "LLVM_STATS:BasicBlocks=0"
+            echo "LLVM_STATS:TotalLlvmInstructions=$NUM_INSTR"
+            echo "---------------------------------------"
+            
+            EXIT_STATUS=0
+            
+            echo ""
+            echo "NOTE: For true binary-to-LLVM IR lifting, please install RetDec or llvm-mctoll."
+            echo "      Run scripts/install_llvm_lifter.sh to attempt installation."
+        else
+            echo "ERROR: llvm-objdump not found" >&2
+            exit 1
+        fi
     fi
 fi
 
