@@ -504,6 +504,19 @@ find "$SAMPLES_DIR" -type f | while read -r SAMPLE; do
 done
 
 # ============================================================================
+# SEMANTIC VALIDATION
+# ============================================================================
+
+echo "--- PHASE 2: SEMANTIC VALIDATION ON FOCUSED BLOCKS ---" | tee -a "$LOG_FILE"
+# Run the validation script on the pre-defined JSON test cases
+if [ -f "scripts/validation/validate_semantics.py" ] && [ -f "samples/validated_blocks/test_cases.json" ]; then
+    python3 scripts/validation/validate_semantics.py samples/validated_blocks/test_cases.json >> "$LOG_FILE" 2>&1
+    echo "Semantic validation completed. See results/semantic_report.csv" | tee -a "$LOG_FILE"
+else
+    echo "Skipping semantic validation (scripts or test cases not found)" | tee -a "$LOG_FILE"
+fi
+
+# ============================================================================
 # SUMMARY
 # ============================================================================
 
