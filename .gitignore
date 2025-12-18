@@ -46,7 +46,14 @@ samples/*.dll
 samples/*.so
 !samples/benign/
 
-malware/
+# Malware directory - ignore binaries but keep results
+malware/*.elf
+malware/*.exe
+!malware/README.md
+
+# Results - allow malware analysis results
+!results/malware/
+
 # Temporary files
 *.tmp
 *.temp
