@@ -52,8 +52,12 @@ ENABLE_BAP="${ENABLE_BAP:-false}"
 # LLVM toolchain must be installed for this to work
 ENABLE_LLVM="${ENABLE_LLVM:-true}"
 
+<<<<<<< HEAD
 # Timeout for each individual tool analysis (in seconds)
 # Set to 0 to disable timeout
+=======
+# Timeout for each analysis step (in seconds)
+>>>>>>> ee9b175 (docs: add CONTRIBUTING and LICENSE; improve README)
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-3600}"
 # ============================================================================
 # SCRIPT SETUP
