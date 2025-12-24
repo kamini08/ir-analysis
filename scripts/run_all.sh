@@ -41,7 +41,7 @@ CSV_SUMMARY="${CSV_SUMMARY:-summary.csv}"
 
 # Path to Ghidra installation (required by analyze_ghidra.sh)
 # This can also be set as an environment variable before running this script
-GHIDRA_INSTALL_DIR="${GHIDRA_INSTALL_DIR:-/home/analyst/ghidra}"
+GHIDRA_INSTALL_DIR="${GHIDRA_INSTALL_DIR:-/opt/ghidra}"
 
 # Enable BAP analysis (set to "true" to enable, "false" or empty to disable)
 # BAP must be installed via opam for this to work
@@ -50,6 +50,9 @@ ENABLE_BAP="${ENABLE_BAP:-false}"
 # Enable LLVM analysis (set to "true" to enable, "false" or empty to disable)
 # LLVM toolchain must be installed for this to work
 ENABLE_LLVM="${ENABLE_LLVM:-true}"
+
+# Timeout for each analysis step (in seconds)
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-3600}"
 # ============================================================================
 # SCRIPT SETUP
 # ============================================================================

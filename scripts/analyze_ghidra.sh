@@ -96,7 +96,7 @@ echo "=========================================="
     "$GHIDRA_PROJECT_DIR" \
     "$PROJECT_NAME" \
     -import "$BINARY_PATH" \
-    -analysisTimeoutPerFile 0 \
+    -analysisTimeoutPerFile 3600 \
     -postScript "$POST_SCRIPT_PATH" \
     -deleteProject
 
